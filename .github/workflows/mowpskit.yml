@@ -1,0 +1,129 @@
+name: MowPSKit Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mowpskit-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: test-and-build
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check source normalization
+        shell: pwsh
+        run: |
+          & .\scripts\normalize-source.ps1
+          git diff --exit-code -- src
+
+      - name: Run framework tests with PowerShell 7
+        shell: pwsh
+        run: |
+          & .\tests\Framework.Tests.ps1
+
+      - name: Run framework tests with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          & .\tests\Framework.Tests.ps1
+
+      - name: Build artifact
+        shell: pwsh
+        run: |
+          & .\scripts\build.ps1
+
+      - name: Validate dist layout
+        shell: pwsh
+        run: |
+          $expectedArtifact = (Resolve-Path .\dist\MowPSKit.ps1).Path
+          $unexpectedEntries = @(
+              Get-ChildItem .\dist -Force |
+                  Where-Object {
+                      $_.FullName -ne $expectedArtifact
+                  }
+          )
+
+          if ($unexpectedEntries.Count -gt 0) {
+              $names = $unexpectedEntries.Name -join ', '
+              throw "dist may contain only MowPSKit.ps1. Unexpected: $names"
+          }
+
+      - name: Validate artifact with PowerShell 7
+        shell: pwsh
+        run: |
+          & .\dist\MowPSKit.ps1
+          $runtime = & 'mow.ver'
+          $expectedVersion = (Get-Content .\version.txt -Raw).Trim()
+
+          if ($runtime.Mode -ne 'Ephemeral') {
+              throw "Unexpected runtime mode: $($runtime.Mode)"
+          }
+
+          if ($runtime.BuildMode -ne 'Compiled') {
+              throw "Unexpected build mode: $($runtime.BuildMode)"
+          }
+
+          if ($runtime.Version -ne $expectedVersion) {
+              throw "Version mismatch. Runtime: $($runtime.Version); Expected: $expectedVersion"
+          }
+
+          & 'mow.unload'
+
+      - name: Validate artifact with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          & .\dist\MowPSKit.ps1
+          $runtime = & 'mow.ver'
+          $expectedVersion = (Get-Content .\version.txt -Raw).Trim()
+
+          if ($runtime.Mode -ne 'Ephemeral') {
+              throw "Unexpected runtime mode: $($runtime.Mode)"
+          }
+
+          if ($runtime.BuildMode -ne 'Compiled') {
+              throw "Unexpected build mode: $($runtime.BuildMode)"
+          }
+
+          if ($runtime.Version -ne $expectedVersion) {
+              throw "Version mismatch. Runtime: $($runtime.Version); Expected: $expectedVersion"
+          }
+
+          & 'mow.unload'
+
+      - name: Commit generated dist
+        if: ${{ github.ref == 'refs/heads/main' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          git add -- dist/MowPSKit.ps1
+          git diff --cached --quiet
+          $diffExit = $LASTEXITCODE
+
+          if ($diffExit -eq 0) {
+              Write-Host 'dist is already current.'
+              exit 0
+          }
+
+          if ($diffExit -ne 1) {
+              throw "git diff failed with exit code $diffExit."
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: rebuild dist [skip ci]'
+          git push origin HEAD:main

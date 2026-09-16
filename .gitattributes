@@ -1,0 +1,21 @@
+# Default text handling
+* text=auto
+
+# PowerShell / Windows scripts
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# MowPSKit text sources
+*.json text eol=crlf
+*.md   text eol=crlf
+*.txt  text eol=crlf
+
+# Git / CI configuration
+.gitattributes text eol=lf
+.gitignore      text eol=lf
+.editorconfig   text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
