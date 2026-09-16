@@ -1,0 +1,84 @@
+# .NET build output
+bin/
+obj/
+artifacts/
+nuget-artifacts/
+
+# PowerShell / Ionide
+.ionide/
+.profile.ps1
+
+# Visual Studio
+.vs/
+*.suo
+*.csproj.user
+*.xproj.user
+
+# VS Code
+/**/.vscode/
+
+# JetBrains Rider
+.idea/
+.idea.powershell/
+
+# Build / debug output
+/debug/
+/staging/
+gen/
+tmp/
+logfile/
+
+# Packages / installers
+*.nupkg
+*.nuget.props
+*.deb
+*.rpm
+*.pkg
+*.msi
+*.appx
+*.msix
+*.AppImage
+*.tar.gz
+*.zip
+
+# Binaries / debug symbols
+*.exe
+*.dll
+*.pdb
+*.wixpdb
+
+# Test output
+*-tests.xml
+TestsResults*.xml
+ParallelXUnitResults.xml
+xUnitResults.xml
+TestResults/
+crtf/
+**/pester-analysis-*/
+
+# BenchmarkDotNet
+BenchmarkDotNet.Artifacts/
+
+# MSBuild
+msbuild.binlog
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# NuGet legacy
+project.lock.json
+
+# PowerShell install scripts
+dotnet-install.ps1
+dotnet-install.sh
+dotnet-install.sh.*
+dotnet-uninstall-pkgs.sh
+dotnet-uninstall-debian-packages.sh
+
+# Local AI handoff
+/.codex-handoff.md
