@@ -25,8 +25,13 @@ $MetadataPath = Join-Path $InstallDir 'install.json'
 $ProfileStart = '# >>> MowPSKit >>>'
 $ProfileEnd = '# <<< MowPSKit <<<'
 $escapedInstallPath = $InstallPath.Replace("'", "''")
-$ProfileLoader = "if (Test-Path -LiteralPath '$escapedInstallPath') { & '$escapedInstallPath' }"
+$ProfileLoader = @"
+if (Test-Path -LiteralPath '$escapedInstallPath') {
+    & '$escapedInstallPath'
+}
 
+Set-Alias -Name clip -Value Set-Clipboard
+"@
 
 function Get-MowTextEncoding {
     param(
