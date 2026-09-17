@@ -226,6 +226,219 @@ function Write-KeyValue {
     }
 }
 
+function Write-Banner {
+    <#
+    .SYNOPSIS
+    Writes a full-width framed banner to the console.
+
+    .DESCRIPTION
+    Writes centered text inside a banner. By default, the banner fills
+    the current console width. The padding pattern repeats as needed
+    and is truncated to exactly match the target display width.
+
+    .PARAMETER Text
+    Text displayed in the center of the banner.
+
+    .PARAMETER Padding
+    Repeating string used to draw the banner.
+
+    .PARAMETER Width
+    Total banner width. A value of 0 uses the current console width.
+
+    .PARAMETER PaddingColor
+    Console color used for the border and padding.
+
+    .PARAMETER TextColor
+    Console color used for the center text.
+
+    .PARAMETER PaddingStyle
+    Console style used for the padding.
+
+    .PARAMETER TextStyle
+    Console style used for the center text.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory, Position = 0)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Text,
+
+        [Parameter(Position = 1)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Padding = '=',
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$Width = 0,
+
+        [ConsoleColor]$PaddingColor = [ConsoleColor]::White,
+
+        [ConsoleColor]$TextColor = [ConsoleColor]::Cyan,
+
+        [string]$PaddingStyle = 'None',
+
+        [string]$TextStyle = 'Bold'
+    )
+
+    function Get-Fill {
+        param (
+            [string]$Pattern,
+            [int]$TargetWidth
+        )
+
+        $result = ''
+
+        while ((Get-DisplayWidth -Text $result) -lt $TargetWidth) {
+            $result += $Pattern
+        }
+
+        while ((Get-DisplayWidth -Text $result) -gt $TargetWidth) {
+            $result = $result.Substring(0, $result.Length - 1)
+        }
+
+        return $result
+    }
+
+    if ($Width -le 0) {
+        $Width = $Host.UI.RawUI.WindowSize.Width
+    }
+
+    $Width = [Math]::Max(3, $Width - 1)
+
+    $textWidth = Get-DisplayWidth -Text $Text
+
+    if ($textWidth + 2 -gt $Width) {
+        $Text = $Text.Substring(0, [Math]::Max(0, $Width - 5)) + '...'
+        $textWidth = Get-DisplayWidth -Text $Text
+    }
+
+    $innerWidth = $Width - 2
+    $remaining = $innerWidth - $textWidth
+
+    $leftSpaces  = [Math]::Floor($remaining / 2)
+    $rightSpaces = $remaining - $leftSpaces
+
+    $border = Get-Fill -Pattern $Padding -TargetWidth $Width
+    $edge = $Padding.Substring(0, 1)
+
+    Write-Text `
+        -Text $border `
+        -Color $PaddingColor `
+        -Style $PaddingStyle
+
+    Write-Text `
+        -Text $edge, (' ' * $leftSpaces), $Text, (' ' * $rightSpaces), $edge `
+        -Color $PaddingColor, $PaddingColor, $TextColor, $PaddingColor, $PaddingColor `
+        -Style $PaddingStyle, $PaddingStyle, $TextStyle, $PaddingStyle, $PaddingStyle
+
+    Write-Text `
+        -Text $border `
+        -Color $PaddingColor `
+        -Style $PaddingStyle
+}
+
+function Write-Separator {
+    <#
+    .SYNOPSIS
+    Writes a centered section separator to the console.
+
+    .DESCRIPTION
+    Writes text centered on a full-width line with repeating padding
+    on both sides. The padding pattern repeats and is truncated to fit
+    the current console width.
+
+    .PARAMETER Text
+    Text displayed in the center of the separator.
+
+    .PARAMETER Padding
+    Repeating string used to fill both sides.
+
+    .PARAMETER Width
+    Total separator width. A value of 0 uses the current console width.
+
+    .PARAMETER Gap
+    Number of spaces placed between the padding and center text.
+
+    .PARAMETER PaddingColor
+    Console color used for the padding.
+
+    .PARAMETER TextColor
+    Console color used for the center text.
+
+    .PARAMETER PaddingStyle
+    Console style used for the padding.
+
+    .PARAMETER TextStyle
+    Console style used for the center text.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory, Position = 0)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Text,
+
+        [Parameter(Position = 1)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Padding = '-',
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$Width = 0,
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$Gap = 1,
+
+        [ConsoleColor]$PaddingColor = [ConsoleColor]::DarkGray,
+
+        [ConsoleColor]$TextColor = [ConsoleColor]::Cyan,
+
+        [string]$PaddingStyle = 'None',
+
+        [string]$TextStyle = 'Bold'
+    )
+
+    function Get-Fill {
+        param (
+            [string]$Pattern,
+            [int]$TargetWidth
+        )
+
+        if ($TargetWidth -le 0) {
+            return ''
+        }
+
+        $result = ''
+
+        while ((Get-DisplayWidth -Text $result) -lt $TargetWidth) {
+            $result += $Pattern
+        }
+
+        while ((Get-DisplayWidth -Text $result) -gt $TargetWidth) {
+            $result = $result.Substring(0, $result.Length - 1)
+        }
+
+        return $result
+    }
+
+    if ($Width -le 0) {
+        $Width = $Host.UI.RawUI.WindowSize.Width - 1
+    }
+
+    $textWidth = Get-DisplayWidth -Text $Text
+    $gapWidth = $Gap * 2
+    $paddingWidth = [Math]::Max(0, $Width - $textWidth - $gapWidth)
+
+    $leftWidth = [Math]::Floor($paddingWidth / 2)
+    $rightWidth = $paddingWidth - $leftWidth
+
+    $left = Get-Fill -Pattern $Padding -TargetWidth $leftWidth
+    $right = Get-Fill -Pattern $Padding -TargetWidth $rightWidth
+    $space = ' ' * $Gap
+
+    Write-Text `
+        -Text $left, $space, $Text, $space, $right `
+        -Color $PaddingColor, $PaddingColor, $TextColor, $PaddingColor, $PaddingColor `
+        -Style $PaddingStyle, $PaddingStyle, $TextStyle, $PaddingStyle, $PaddingStyle
+}
+
 # ---------------------------------------------------------------------------------------------
 function Split-DisplayText {
     <#
