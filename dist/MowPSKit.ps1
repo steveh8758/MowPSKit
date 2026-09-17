@@ -18,7 +18,7 @@
         [switch]$VersionOnly
     )
 
-    Microsoft.PowerShell.Utility\Set-Variable -Name MowPSKitVersion -Value '1.0.0' -Option Constant -Scope Local
+    Microsoft.PowerShell.Utility\Set-Variable -Name MowPSKitVersion -Value '1.1.0' -Option Constant -Scope Local
 
     if ($VersionOnly) {
         return $MowPSKitVersion
