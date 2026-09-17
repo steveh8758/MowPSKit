@@ -301,10 +301,10 @@ function Confirm-MowOperation {
     }
 
     $prompt = if ($Operation -eq 'Install') {
-        "Install MowPSKit $RemoteVersion? [y/N]"
+        "Install MowPSKit ${RemoteVersion}? [y/N]"
     }
     else {
-        "Update MowPSKit from $InstalledVersion to $RemoteVersion? [y/N]"
+        "Update MowPSKit from $InstalledVersion to ${RemoteVersion}? [y/N]"
     }
 
     [string]$response = Read-Host $prompt
