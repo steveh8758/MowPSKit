@@ -684,80 +684,37 @@ $localUninstallAction = {
     }
 
     $metadataPath = Join-Path $installDirectory 'install.json'
-    $profilePaths = [System.Collections.Generic.List[string]]::new()
-    $legacySetupPath = ''
+    $documentsPath = [Environment]::GetFolderPath('MyDocuments')
+    $windowsPowerShellProfilePath = Join-Path `
+        $documentsPath `
+        'WindowsPowerShell\profile.ps1'
+    $powerShell7ProfilePath = Join-Path `
+        $documentsPath `
+        'PowerShell\profile.ps1'
+    $profileStart = '# >>> MowPSKit >>>'
+    $profileEnd = '# <<< MowPSKit <<<'
+    $profilePattern = '(?ms)^[ \t]*' +
+        [regex]::Escape($profileStart) +
+        '[ \t]*\r?\n.*?^[ \t]*' +
+        [regex]::Escape($profileEnd) +
+        '[ \t]*(?:\r?\n)?'
 
-    if ([System.IO.File]::Exists($metadataPath)) {
-        try {
-            $metadata = Get-Content `
-                -LiteralPath $metadataPath `
-                -Raw `
-                -ErrorAction Stop |
-                ConvertFrom-Json `
-                    -ErrorAction Stop
+    function Get-MowLocalProfileState {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Path
+        )
 
-            foreach ($profilePath in @($metadata.ProfilePaths)) {
-                if (-not [string]::IsNullOrWhiteSpace([string]$profilePath)) {
-                    $profilePaths.Add([string]$profilePath)
-                }
-            }
-
-            if (
-                $profilePaths.Count -eq 0 -and
-                -not [string]::IsNullOrWhiteSpace(
-                    [string]$metadata.ProfilePath
-                )
-            ) {
-                $profilePaths.Add([string]$metadata.ProfilePath)
-            }
-
-            if (
-                -not [string]::IsNullOrWhiteSpace(
-                    [string]$metadata.SetupPath
-                )
-            ) {
-                try {
-                    $setupCandidate = [System.IO.Path]::GetFullPath(
-                        [string]$metadata.SetupPath
-                    )
-                    $setupParent = [System.IO.Path]::GetFullPath(
-                        (Split-Path $setupCandidate -Parent)
-                    )
-
-                    if (
-                        $setupParent.Equals(
-                            $installDirectory,
-                            [System.StringComparison]::OrdinalIgnoreCase
-                        ) -and
-                        [System.IO.Path]::GetFileName($setupCandidate) -eq
-                            'setup.ps1'
-                    ) {
-                        $legacySetupPath = $setupCandidate
-                    }
-                }
-                catch {
-                    # Ignore an unsafe or malformed legacy setup path.
-                }
+        if (-not [System.IO.File]::Exists($Path)) {
+            return [pscustomobject]@{
+                Path = $Path
+                HasManagedBlock = $false
+                Encoding = $null
+                Text = ''
             }
         }
-        catch {
-            Write-Warning 'Could not read installation metadata. Using the current PowerShell profile.'
-        }
-    }
 
-    if (
-        $profilePaths.Count -eq 0 -and
-        -not [string]::IsNullOrWhiteSpace($DefaultProfilePath)
-    ) {
-        $profilePaths.Add($DefaultProfilePath)
-    }
-
-    foreach ($profilePath in @($profilePaths | Select-Object -Unique)) {
-        if (-not [System.IO.File]::Exists($profilePath)) {
-            continue
-        }
-
-        $bytes = [System.IO.File]::ReadAllBytes($profilePath)
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
         $encoding = $null
 
         if (
@@ -802,20 +759,316 @@ $localUninstallAction = {
             $profileText = $profileText.Substring(1)
         }
 
-        $profilePattern = '(?ms)^[ \t]*# >>> MowPSKit >>>[ \t]*\r?\n.*?^[ \t]*# <<< MowPSKit <<<[ \t]*(?:\r?\n)?'
+        return [pscustomobject]@{
+            Path = $Path
+            HasManagedBlock = [regex]::IsMatch(
+                $profileText,
+                $profilePattern
+            )
+            Encoding = $encoding
+            Text = $profileText
+        }
+    }
+
+    function Remove-MowLocalProfileBlock {
+        param(
+            [Parameter(Mandatory)]
+            [pscustomobject]$State
+        )
+
+        if (-not $State.HasManagedBlock) {
+            return
+        }
+
         $updatedProfile = [regex]::Replace(
-            $profileText,
+            $State.Text,
             $profilePattern,
             ''
         )
 
-        if ($updatedProfile -ne $profileText) {
-            [System.IO.File]::WriteAllText(
-                $profilePath,
-                $updatedProfile,
-                $encoding
+        if ($updatedProfile -eq $State.Text) {
+            return
+        }
+
+        [System.IO.File]::WriteAllText(
+            $State.Path,
+            $updatedProfile,
+            $State.Encoding
+        )
+    }
+
+    function Get-MowLocalProfileLabel {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Path
+        )
+
+        if ($Path.Equals(
+            $powerShell7ProfilePath,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return 'PowerShell 7+'
+        }
+
+        if ($Path.Equals(
+            $windowsPowerShellProfilePath,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return 'Windows PowerShell 5.1'
+        }
+
+        return $Path
+    }
+
+    $metadata = $null
+    $metadataProfilePaths = [System.Collections.Generic.List[string]]::new()
+    $legacySetupPath = ''
+
+    if ([System.IO.File]::Exists($metadataPath)) {
+        try {
+            $metadata = Get-Content `
+                -LiteralPath $metadataPath `
+                -Raw `
+                -ErrorAction Stop |
+                ConvertFrom-Json `
+                    -ErrorAction Stop
+
+            foreach ($profilePath in @($metadata.ProfilePaths)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$profilePath)) {
+                    $metadataProfilePaths.Add([string]$profilePath)
+                }
+            }
+
+            if (
+                $metadataProfilePaths.Count -eq 0 -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$metadata.ProfilePath
+                )
+            ) {
+                $metadataProfilePaths.Add([string]$metadata.ProfilePath)
+            }
+
+            if (
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$metadata.SetupPath
+                )
+            ) {
+                try {
+                    $setupCandidate = [System.IO.Path]::GetFullPath(
+                        [string]$metadata.SetupPath
+                    )
+                    $setupParent = [System.IO.Path]::GetFullPath(
+                        (Split-Path $setupCandidate -Parent)
+                    )
+
+                    if (
+                        $setupParent.Equals(
+                            $installDirectory,
+                            [System.StringComparison]::OrdinalIgnoreCase
+                        ) -and
+                        [System.IO.Path]::GetFileName($setupCandidate) -eq
+                            'setup.ps1'
+                    ) {
+                        $legacySetupPath = $setupCandidate
+                    }
+                }
+                catch {
+                    # Ignore an unsafe or malformed legacy setup path.
+                }
+            }
+        }
+        catch {
+            Write-Warning 'Could not read installation metadata. Profile markers will be detected directly.'
+        }
+    }
+
+    $candidatePaths = @(
+        $powerShell7ProfilePath
+        $windowsPowerShellProfilePath
+        @($metadataProfilePaths)
+        $DefaultProfilePath
+    )
+
+    $candidatePaths = @(
+        $candidatePaths |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_)
+            } |
+            Select-Object -Unique
+    )
+
+    $managedProfiles = @(
+        foreach ($profilePath in $candidatePaths) {
+            $state = Get-MowLocalProfileState -Path ([string]$profilePath)
+
+            if (-not $state.HasManagedBlock) {
+                continue
+            }
+
+            [pscustomobject]@{
+                Path = [string]$state.Path
+                Label = Get-MowLocalProfileLabel -Path ([string]$state.Path)
+                State = $state
+            }
+        }
+    )
+
+    $selectedProfiles = @()
+
+    if ($managedProfiles.Count -eq 1) {
+        $selectedProfiles = @($managedProfiles[0])
+        Write-Host (
+            'Detected MowPSKit profile: {0}' -f
+            $managedProfiles[0].Label
+        )
+    }
+    elseif ($managedProfiles.Count -gt 1) {
+        Write-Host ''
+        Write-Host 'Select PowerShell profile to uninstall MowPSKit from:'
+        Write-Host ''
+
+        for ($index = 0; $index -lt $managedProfiles.Count; $index++) {
+            Write-Host ('  [{0}] {1}' -f `
+                ($index + 1), `
+                $managedProfiles[$index].Label
             )
         }
+
+        $allOption = $managedProfiles.Count + 1
+        $allLabel = if (
+            $managedProfiles.Count -eq 2 -and
+            @($managedProfiles | Where-Object {
+                $_.Path.Equals(
+                    $powerShell7ProfilePath,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )
+            }).Count -eq 1 -and
+            @($managedProfiles | Where-Object {
+                $_.Path.Equals(
+                    $windowsPowerShellProfilePath,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )
+            }).Count -eq 1
+        ) {
+            'Both'
+        }
+        else {
+            'All detected profiles'
+        }
+
+        Write-Host ('  [{0}] {1}' -f $allOption, $allLabel)
+        Write-Host '  [0] Cancel'
+        Write-Host ''
+
+        [string]$choice = Read-Host "Choice [$allOption]"
+
+        if ([string]::IsNullOrWhiteSpace($choice)) {
+            $choice = [string]$allOption
+        }
+
+        if ($choice.Trim() -eq '0') {
+            Write-Host 'MowPSKit uninstall cancelled.'
+            return
+        }
+
+        $choiceNumber = 0
+
+        if (-not [int]::TryParse($choice.Trim(), [ref]$choiceNumber)) {
+            throw "Invalid uninstall selection '$choice'."
+        }
+
+        if ($choiceNumber -eq $allOption) {
+            $selectedProfiles = @($managedProfiles)
+        }
+        elseif (
+            $choiceNumber -ge 1 -and
+            $choiceNumber -le $managedProfiles.Count
+        ) {
+            $selectedProfiles = @(
+                $managedProfiles[$choiceNumber - 1]
+            )
+        }
+        else {
+            throw "Invalid uninstall selection '$choice'."
+        }
+    }
+
+    foreach ($profile in $selectedProfiles) {
+        Remove-MowLocalProfileBlock -State $profile.State
+    }
+
+    $remainingProfiles = @(
+        foreach ($profilePath in $candidatePaths) {
+            $state = Get-MowLocalProfileState -Path ([string]$profilePath)
+
+            if (-not $state.HasManagedBlock) {
+                continue
+            }
+
+            [pscustomobject]@{
+                Path = [string]$state.Path
+                Label = Get-MowLocalProfileLabel -Path ([string]$state.Path)
+            }
+        }
+    )
+
+    if ($remainingProfiles.Count -gt 0) {
+        if ($null -ne $metadata) {
+            $remainingPaths = @($remainingProfiles | ForEach-Object { $_.Path })
+
+            $metadata |
+                Add-Member `
+                    -NotePropertyName ProfilePaths `
+                    -NotePropertyValue $remainingPaths `
+                    -Force
+
+            $metadataJson = $metadata | ConvertTo-Json
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+            [System.IO.File]::WriteAllText(
+                $metadataPath,
+                $metadataJson,
+                $utf8NoBom
+            )
+        }
+
+        Write-Host ''
+
+        foreach ($profile in $selectedProfiles) {
+            Write-Host (
+                'MowPSKit removed from {0}.' -f
+                $profile.Label
+            )
+        }
+
+        Write-Host 'MowPSKit remains installed for:'
+
+        foreach ($profile in $remainingProfiles) {
+            Write-Host "  $($profile.Label)"
+        }
+
+        $currentProfileWasRemoved = $false
+
+        foreach ($profile in $selectedProfiles) {
+            if (
+                -not [string]::IsNullOrWhiteSpace($DefaultProfilePath) -and
+                $profile.Path.Equals(
+                    $DefaultProfilePath,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )
+            ) {
+                $currentProfileWasRemoved = $true
+            }
+        }
+
+        if ($currentProfileWasRemoved) {
+            Microsoft.PowerShell.Core\Remove-Module `
+                -ModuleInfo $RuntimeModule `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+
+        return
     }
 
     foreach ($ownedPath in @(
@@ -843,7 +1096,12 @@ $localUninstallAction = {
         [System.IO.Directory]::Delete($installDirectory)
     }
 
+    Write-Host ''
     Write-Host 'MowPSKit uninstalled locally.'
+
+    foreach ($profile in $selectedProfiles) {
+        Write-Host "  Profile : $($profile.Path)"
+    }
 
     Microsoft.PowerShell.Core\Remove-Module `
         -ModuleInfo $RuntimeModule `

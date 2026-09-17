@@ -10,12 +10,39 @@ param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'MowPSKit'),
 
     [ValidateNotNullOrEmpty()]
-    [string]$ProfilePath = $PROFILE.CurrentUserAllHosts,
+    [string[]]$ProfilePath = @(
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\profile.ps1')
+    ),
 
     [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
+
+$ProfilePathWasSpecified = $PSBoundParameters.ContainsKey('ProfilePath')
+$DocumentsPath = [Environment]::GetFolderPath('MyDocuments')
+$WindowsPowerShellProfilePath = Join-Path $DocumentsPath 'WindowsPowerShell\profile.ps1'
+$PowerShell7ProfilePath = Join-Path $DocumentsPath 'PowerShell\profile.ps1'
+
+$WindowsPowerShellAvailable = (
+    $PSVersionTable.PSEdition -eq 'Desktop' -or
+    $null -ne (
+        Microsoft.PowerShell.Core\Get-Command `
+            -Name 'powershell.exe' `
+            -CommandType Application `
+            -ErrorAction SilentlyContinue
+    )
+)
+
+$PowerShell7Available = (
+    $PSVersionTable.PSEdition -eq 'Core' -or
+    $null -ne (
+        Microsoft.PowerShell.Core\Get-Command `
+            -Name 'pwsh.exe' `
+            -CommandType Application `
+            -ErrorAction SilentlyContinue
+    )
+)
 
 $ProductName = 'MowPSKit'
 
@@ -312,6 +339,132 @@ function Confirm-MowOperation {
 }
 
 
+function Resolve-MowProfilePaths {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Install', 'Update')]
+        [string]$Operation
+    )
+
+    if ($ProfilePathWasSpecified) {
+        return @(
+            $ProfilePath |
+                Where-Object {
+                    -not [string]::IsNullOrWhiteSpace($_)
+                } |
+                Select-Object -Unique
+        )
+    }
+
+    if ($Operation -eq 'Update' -and (Test-Path $MetadataPath)) {
+        try {
+            $oldMetadata = Get-Content `
+                -Path $MetadataPath `
+                -Raw |
+                ConvertFrom-Json
+
+            $savedPaths = @()
+
+            if ($oldMetadata.ProfilePaths) {
+                $savedPaths = @($oldMetadata.ProfilePaths)
+            }
+            elseif ($oldMetadata.ProfilePath) {
+                $savedPaths = @($oldMetadata.ProfilePath)
+            }
+
+            $savedPaths = @(
+                $savedPaths |
+                    Where-Object {
+                        if ([string]::IsNullOrWhiteSpace($_)) {
+                            return $false
+                        }
+
+                        if (
+                            [string]::Equals(
+                                [string]$_,
+                                $WindowsPowerShellProfilePath,
+                                [System.StringComparison]::OrdinalIgnoreCase
+                            )
+                        ) {
+                            return $WindowsPowerShellAvailable
+                        }
+
+                        if (
+                            [string]::Equals(
+                                [string]$_,
+                                $PowerShell7ProfilePath,
+                                [System.StringComparison]::OrdinalIgnoreCase
+                            )
+                        ) {
+                            return $PowerShell7Available
+                        }
+
+                        return $true
+                    } |
+                    Select-Object -Unique
+            )
+
+            if ($savedPaths.Count -gt 0) {
+                return $savedPaths
+            }
+        }
+        catch {
+            Write-Warning 'Existing installation metadata could not be read. Available profiles will be used.'
+        }
+    }
+
+    $availablePaths = @()
+
+    if ($WindowsPowerShellAvailable) {
+        $availablePaths += $WindowsPowerShellProfilePath
+    }
+
+    if ($PowerShell7Available) {
+        $availablePaths += $PowerShell7ProfilePath
+    }
+
+    if ($availablePaths.Count -eq 0) {
+        throw 'No supported PowerShell installation was detected.'
+    }
+
+    if ($Operation -eq 'Update' -or $Force -or $availablePaths.Count -eq 1) {
+        return $availablePaths
+    }
+
+    Write-Host ''
+    Write-Host 'Select PowerShell profile to configure:'
+    Write-Host ''
+    Write-Host '  [1] PowerShell 7+'
+    Write-Host '  [2] Windows PowerShell 5.1'
+    Write-Host '  [3] Both'
+    Write-Host ''
+
+    [string]$choice = Read-Host 'Choice [3]'
+
+    if ([string]::IsNullOrWhiteSpace($choice)) {
+        $choice = '3'
+    }
+
+    switch ($choice.Trim()) {
+        '1' {
+            return @($PowerShell7ProfilePath)
+        }
+        '2' {
+            return @($WindowsPowerShellProfilePath)
+        }
+        '3' {
+            return @(
+                $WindowsPowerShellProfilePath
+                $PowerShell7ProfilePath
+            )
+        }
+        default {
+            throw "Invalid profile selection '$choice'. Choose 1, 2, or 3."
+        }
+    }
+}
+
+
 function Add-MowProfileBlock {
     param(
         [Parameter(Mandatory)]
@@ -446,7 +599,6 @@ function Confirm-MowProfileExecutionPolicy {
 
 
 function Invoke-MowInstallOrUpdate {
-    $profilePath = $ProfilePath
     $isInstalled = [System.IO.File]::Exists($InstallPath)
 
     if ($Action -eq 'Update' -and -not $isInstalled) {
@@ -517,33 +669,8 @@ function Invoke-MowInstallOrUpdate {
             -Force |
             Out-Null
 
-        $profilePaths = @($profilePath)
-
-        if (Test-Path $MetadataPath) {
-            try {
-                $oldMetadata = Get-Content `
-                    -Path $MetadataPath `
-                    -Raw |
-                    ConvertFrom-Json
-
-                if ($oldMetadata.ProfilePaths) {
-                    $profilePaths += @($oldMetadata.ProfilePaths)
-                }
-                elseif ($oldMetadata.ProfilePath) {
-                    $profilePaths += @($oldMetadata.ProfilePath)
-                }
-            }
-            catch {
-                Write-Warning 'Existing installation metadata could not be read. It will be replaced.'
-            }
-        }
-
         $profilePaths = @(
-            $profilePaths |
-                Where-Object {
-                    $_
-                } |
-                Select-Object -Unique
+            Resolve-MowProfilePaths -Operation $operation
         )
 
         $metadata = [ordered]@{
@@ -566,7 +693,12 @@ function Invoke-MowInstallOrUpdate {
 
         $installSnapshot = Get-MowFileSnapshot -Path $InstallPath
         $metadataSnapshot = Get-MowFileSnapshot -Path $MetadataPath
-        $profileSnapshot = Get-MowFileSnapshot -Path $profilePath
+        $profileSnapshots = @{}
+
+        foreach ($path in $profilePaths) {
+            $profileSnapshots[$path] = Get-MowFileSnapshot -Path $path
+        }
+
         $runtimeModulesBefore = @(
             Microsoft.PowerShell.Core\Get-Module `
                 -Name $ProductName `
@@ -579,7 +711,9 @@ function Invoke-MowInstallOrUpdate {
             -Destination $InstallPath `
             -Force
 
-        Add-MowProfileBlock -Path $profilePath
+        foreach ($path in $profilePaths) {
+            Add-MowProfileBlock -Path $path
+        }
 
         Move-Item `
             -LiteralPath $metadataTempPath `
@@ -637,7 +771,11 @@ function Invoke-MowInstallOrUpdate {
         Write-Host "MowPSKit $completedOperation."
         Write-Host "  Version : $remoteVersion"
         Write-Host "  Path    : $InstallPath"
-        Write-Host "  Profile : $profilePath"
+        Write-Host '  Profiles:'
+
+        foreach ($path in $profilePaths) {
+            Write-Host "    $path"
+        }
     }
     catch {
         $installError = $_
@@ -646,7 +784,7 @@ function Invoke-MowInstallOrUpdate {
         if ($transactionStarted) {
             $installFileRestored = $false
 
-            foreach ($rollback in @(
+            $rollbackTargets = @(
                 [pscustomobject]@{
                     Path = $InstallPath
                     Snapshot = $installSnapshot
@@ -655,11 +793,16 @@ function Invoke-MowInstallOrUpdate {
                     Path = $MetadataPath
                     Snapshot = $metadataSnapshot
                 }
-                [pscustomobject]@{
-                    Path = $profilePath
-                    Snapshot = $profileSnapshot
+            )
+
+            foreach ($path in $profilePaths) {
+                $rollbackTargets += [pscustomobject]@{
+                    Path = $path
+                    Snapshot = $profileSnapshots[$path]
                 }
-            )) {
+            }
+
+            foreach ($rollback in $rollbackTargets) {
                 try {
                     if ($rollback.Snapshot.Exists) {
                         $parent = Split-Path $rollback.Path -Parent
