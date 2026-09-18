@@ -151,6 +151,7 @@ function Write-Step {
     }
 }
 
+
 function Write-KeyValue {
     <#
     .SYNOPSIS
@@ -225,6 +226,7 @@ function Write-KeyValue {
             -StartSpaces $StartSpaces
     }
 }
+
 
 function Write-Banner {
     <#
@@ -336,6 +338,7 @@ function Write-Banner {
         -Style $PaddingStyle
 }
 
+
 function Write-Separator {
     <#
     .SYNOPSIS
@@ -439,7 +442,566 @@ function Write-Separator {
         -Style $PaddingStyle, $PaddingStyle, $TextStyle, $PaddingStyle, $PaddingStyle
 }
 
-# ---------------------------------------------------------------------------------------------
+
+function Select-Checklist {
+    <#
+    .SYNOPSIS
+    Displays an interactive console checklist.
+
+    .DESCRIPTION
+    Displays a keyboard-controlled checklist in the console and returns
+    the values of the selected items.
+
+    Items may be strings or objects containing Key and/or Value properties.
+
+    If only Key is provided, Value defaults to Key.
+    If only Value is provided, Key defaults to Value.
+    If a string is provided, both Key and Value use the string value.
+
+    Use the Up and Down arrow keys to move the cursor, Space to toggle an
+    item, Enter to confirm the selection, and Escape or Ctrl+C to cancel.
+
+    .PARAMETER Items
+    Specifies the checklist items.
+
+    Each item may be:
+    - A string.
+    - An object containing Key.
+    - An object containing Value.
+    - An object containing both Key and Value.
+
+    Key is displayed in the checklist.
+    Value is returned when the item is selected.
+
+    .PARAMETER DefaultSelected
+    Specifies the zero-based indexes of items that are selected by default.
+
+    .PARAMETER CursorColor
+    Specifies the console color of the checklist cursor.
+
+    .PARAMETER SelectedColor
+    Specifies the console color of selected items.
+
+    .PARAMETER UnselectedColor
+    Specifies the console color of unselected items.
+
+    .PARAMETER SelectedStyle
+    Specifies the text style applied to selected item labels.
+
+    .PARAMETER UnselectedStyle
+    Specifies the text style applied to unselected item labels.
+
+    .OUTPUTS
+    System.Object[]
+
+    Returns the Value of each selected item.
+
+    Returns no output when the checklist is cancelled.
+    #>
+    
+    param(
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [object[]]$Items,
+
+        [int[]]$DefaultSelected = @(),
+
+        [ConsoleColor]$CursorColor = 'White',
+
+        [ConsoleColor]$SelectedColor = 'White',
+
+        [ConsoleColor]$UnselectedColor = 'DarkGray',
+
+        [string]$SelectedStyle = 'Bold',
+
+        [string]$UnselectedStyle = 'None'
+
+    )
+
+
+    # Normalize items
+    #
+    # Key only
+    #   -> Value = Key
+    #
+    # Value only
+    #   -> Key = Value
+    #
+    # String
+    #   -> Key = Value = String
+
+    $Items = @(
+
+        foreach ($item in $Items) {
+
+            if ($item -is [string]) {
+
+                [pscustomobject]@{
+                    Key   = [string]$item
+                    Value = [string]$item
+                }
+
+                continue
+
+            }
+
+
+            $key = ''
+
+            if ($item.PSObject.Properties['Key']) {
+
+                $key = [string]$item.Key
+
+            }
+
+
+            $value = ''
+
+            if ($item.PSObject.Properties['Value']) {
+
+                $value = [string]$item.Value
+
+            }
+
+
+            if (
+                [string]::IsNullOrWhiteSpace($key) -and
+                [string]::IsNullOrWhiteSpace($value)
+            ) {
+
+                throw 'Checklist item must contain Key or Value.'
+
+            }
+
+
+            if ([string]::IsNullOrWhiteSpace($key)) {
+
+                $key = $value
+
+            }
+
+
+            if ([string]::IsNullOrWhiteSpace($value)) {
+
+                $value = $key
+
+            }
+
+
+            [pscustomobject]@{
+                Key   = $key
+                Value = $value
+            }
+
+        }
+
+    )
+
+
+    # Selected state
+
+    $selected = @{}
+
+
+    foreach ($index in $DefaultSelected) {
+
+        if (
+            $index -ge 0 -and
+            $index -lt $Items.Count
+        ) {
+
+            $selected[$index] = $true
+
+        }
+
+    }
+
+
+    # Help
+
+    $helpText =
+        " ↑/↓ Move`r`n" +
+        " Space Toggle`r`n" +
+        " Enter Confirm`r`n" +
+        " Esc/Ctrl+C Cancel`r`n"
+
+
+    $helpLineCount =
+        ($helpText -split '\r?\n').Count
+
+
+    # Reserve enough console space
+
+    $layoutRowCount =
+        $Items.Count +
+        1 +
+        $helpLineCount +
+        1
+
+
+    for (
+        $i = 0;
+        $i -lt $layoutRowCount;
+        $i++
+    ) {
+
+        Write-Text -Text ''
+
+    }
+
+
+    $top =
+        [Console]::CursorTop -
+        $layoutRowCount
+
+
+    if ($top -lt 0) {
+
+        $top = 0
+
+    }
+
+
+    $cursor = 0
+
+
+    # Render one item
+
+    $renderLine = {
+
+        param(
+            [int]$Index
+        )
+
+
+        $item =
+            $Items[$Index]
+
+
+        $pointer = if ($Index -eq $cursor) {
+            '>'
+        }
+        else {
+            ' '
+        }
+
+
+        $isSelected =
+            [bool]$selected[$Index]
+
+
+        $mark = if ($isSelected) {
+            '[x]'
+        }
+        else {
+            '[ ]'
+        }
+
+
+        if ($isSelected) {
+
+            $color =
+                $SelectedColor
+
+            $style =
+                $SelectedStyle
+
+        }
+        else {
+
+            $color =
+                $UnselectedColor
+
+            $style =
+                $UnselectedStyle
+
+        }
+
+
+        $label =
+            [string]$item.Key
+
+
+        # >
+        # space
+        # [x]
+        # space
+
+        $prefixLength =
+            $pointer.Length +
+            1 +
+            $mark.Length +
+            1
+
+
+        $width = [Math]::Max(
+            1,
+            [Console]::WindowWidth - 1
+        )
+
+
+        $maxLabelLength = [Math]::Max(
+            0,
+            $width - $prefixLength
+        )
+
+
+        if (
+            $label.Length -gt
+            $maxLabelLength
+        ) {
+
+            $label = $label.Substring(
+                0,
+                $maxLabelLength
+            )
+
+        }
+
+
+        $usedLength =
+            $prefixLength +
+            $label.Length
+
+
+        $paddingLength = [Math]::Max(
+            0,
+            $width - $usedLength
+        )
+
+
+        $padding =
+            ' ' * $paddingLength
+
+
+        [Console]::SetCursorPosition(
+            0,
+            $top + $Index
+        )
+
+
+        # Style only applies to Label.
+        #
+        # Segment 1 = cursor
+        # Segment 2 = checkbox
+        # Segment 3 = label
+        # Segment 4 = padding
+
+        Write-Text `
+            -Text `
+                $pointer,
+                " $mark ",
+                $label,
+                $padding `
+            -Color `
+                $CursorColor,
+                $color,
+                $color,
+                $color `
+            -Style `
+                'None',
+                'None',
+                $style,
+                'None' `
+            -NoNewLine
+
+    }
+
+
+    # Initial render
+
+    for (
+        $i = 0;
+        $i -lt $Items.Count;
+        $i++
+    ) {
+
+        & $renderLine $i
+
+    }
+
+
+    # Help position
+
+    $helpRow =
+        $top +
+        $Items.Count +
+        1
+
+
+    $inputRow =
+        $helpRow +
+        $helpLineCount
+
+
+    [Console]::SetCursorPosition(
+        0,
+        $helpRow
+    )
+
+
+    Write-Text `
+        -Text $helpText `
+        -Color DarkGray
+
+
+    [Console]::SetCursorPosition(
+        0,
+        $inputRow
+    )
+
+
+    # Treat Ctrl+C as input so we can cancel cleanly.
+
+    $oldTreatControlCAsInput =
+        [Console]::TreatControlCAsInput
+
+
+    [Console]::TreatControlCAsInput =
+        $true
+
+
+    try {
+
+        while ($true) {
+
+            $key =
+                [Console]::ReadKey($true)
+
+
+            # Ctrl+C
+
+            if (
+                $key.Key -eq 'C' -and
+                (
+                    $key.Modifiers -band
+                    [ConsoleModifiers]::Control
+                )
+            ) {
+
+                [Console]::SetCursorPosition(
+                    0,
+                    $inputRow
+                )
+
+                return
+
+            }
+
+
+            switch ($key.Key) {
+
+                'UpArrow' {
+
+                    $previous =
+                        $cursor
+
+
+                    $cursor = (
+                        $cursor -
+                        1 +
+                        $Items.Count
+                    ) % $Items.Count
+
+
+                    & $renderLine $previous
+                    & $renderLine $cursor
+
+                }
+
+
+                'DownArrow' {
+
+                    $previous =
+                        $cursor
+
+
+                    $cursor = (
+                        $cursor +
+                        1
+                    ) % $Items.Count
+
+
+                    & $renderLine $previous
+                    & $renderLine $cursor
+
+                }
+
+
+                'Spacebar' {
+
+                    $selected[$cursor] =
+                        -not [bool]$selected[$cursor]
+
+
+                    & $renderLine $cursor
+
+                }
+
+
+                'Enter' {
+
+                    [Console]::SetCursorPosition(
+                        0,
+                        $inputRow
+                    )
+
+
+                    $result = for (
+                        $i = 0;
+                        $i -lt $Items.Count;
+                        $i++
+                    ) {
+
+                        if (
+                            [bool]$selected[$i]
+                        ) {
+
+                            $Items[$i].Value
+
+                        }
+
+                    }
+
+
+                    return $result
+
+                }
+
+
+                'Escape' {
+
+                    [Console]::SetCursorPosition(
+                        0,
+                        $inputRow
+                    )
+
+                    return
+
+                }
+
+            }
+
+
+            [Console]::SetCursorPosition(
+                0,
+                $inputRow
+            )
+
+        }
+
+    }
+    finally {
+
+        [Console]::TreatControlCAsInput =
+            $oldTreatControlCAsInput
+
+    }
+
+}
+
+
 function Split-DisplayText {
     <#
     .SYNOPSIS
