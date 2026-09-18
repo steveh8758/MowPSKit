@@ -55,6 +55,7 @@ xUnitResults.xml
 TestResults/
 crtf/
 **/pester-analysis-*/
+/src/functions/**/test.ps1
 
 # BenchmarkDotNet
 BenchmarkDotNet.Artifacts/
