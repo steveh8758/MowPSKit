@@ -339,12 +339,110 @@ function Confirm-MowOperation {
 }
 
 
+function Test-MowProfileBlock {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not [System.IO.File]::Exists($Path)) {
+        return $false
+    }
+
+    $file = Read-MowTextFile -Path $Path
+    $text = $file.Text
+    $profilePattern = '(?ms)^[ \t]*# >>> MowPSKit >>>[ \t]*\r?\n.*?^[ \t]*# <<< MowPSKit <<<[ \t]*(?:\r?\n)?'
+    $managedMatches = [regex]::Matches($text, $profilePattern)
+
+    if ($managedMatches.Count -gt 1) {
+        throw "Profile '$Path' contains more than one MowPSKit managed block."
+    }
+
+    if ($managedMatches.Count -eq 1) {
+        return $true
+    }
+
+    if (
+        $text.Contains($ProfileStart) -or
+        $text.Contains($ProfileEnd)
+    ) {
+        throw "Profile '$Path' contains an incomplete MowPSKit managed block."
+    }
+
+    return $false
+}
+
+
+function Get-MowProfileDisplayName {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (
+        [string]::Equals(
+            $Path,
+            $PowerShell7ProfilePath,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        return 'PowerShell 7+'
+    }
+
+    if (
+        [string]::Equals(
+            $Path,
+            $WindowsPowerShellProfilePath,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        return 'Windows PowerShell 5.1'
+    }
+
+    return $Path
+}
+
+
+function Confirm-MowProfileAddition {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Paths
+    )
+
+    if ($Force) {
+        return $true
+    }
+
+    $labels = @(
+        $Paths |
+            ForEach-Object {
+                Get-MowProfileDisplayName -Path $_
+            }
+    )
+
+    $target = if ($labels.Count -eq 1) {
+        $labels[0]
+    }
+    else {
+        $labels -join ', '
+    }
+
+    [string]$response = Read-Host (
+        "MowPSKit is not configured for $target. Configure it now? [y/N]"
+    )
+
+    return $response.Trim().ToLowerInvariant() -in @('y', 'yes')
+}
+
+
 function Resolve-MowProfilePaths {
     param(
         [Parameter(Mandatory)]
         [ValidateSet('Install', 'Update')]
         [string]$Operation
     )
+
+    $script:MowProfileSelectionConfirmed = $false
 
     if ($ProfilePathWasSpecified) {
         return @(
@@ -354,6 +452,20 @@ function Resolve-MowProfilePaths {
                 } |
                 Select-Object -Unique
         )
+    }
+
+    $availablePaths = @()
+
+    if ($PowerShell7Available) {
+        $availablePaths += $PowerShell7ProfilePath
+    }
+
+    if ($WindowsPowerShellAvailable) {
+        $availablePaths += $WindowsPowerShellProfilePath
+    }
+
+    if ($availablePaths.Count -eq 0) {
+        throw 'No supported PowerShell installation was detected.'
     }
 
     if ($Operation -eq 'Update' -and (Test-Path $MetadataPath)) {
@@ -409,26 +521,45 @@ function Resolve-MowProfilePaths {
             }
         }
         catch {
-            Write-Warning 'Existing installation metadata could not be read. Available profiles will be used.'
+            Write-Warning 'Existing installation metadata could not be read. Existing managed profiles will be used.'
         }
     }
 
-    $availablePaths = @()
+    $managedPaths = @(
+        $availablePaths |
+            Where-Object {
+                Test-MowProfileBlock -Path $_
+            }
+    )
 
-    if ($WindowsPowerShellAvailable) {
-        $availablePaths += $WindowsPowerShellProfilePath
-    }
+    if ($Operation -eq 'Update') {
+        if ($managedPaths.Count -gt 0) {
+            return $managedPaths
+        }
 
-    if ($PowerShell7Available) {
-        $availablePaths += $PowerShell7ProfilePath
-    }
-
-    if ($availablePaths.Count -eq 0) {
-        throw 'No supported PowerShell installation was detected.'
-    }
-
-    if ($Operation -eq 'Update' -or $Force -or $availablePaths.Count -eq 1) {
         return $availablePaths
+    }
+
+    $missingPaths = @(
+        $availablePaths |
+            Where-Object {
+                -not (Test-MowProfileBlock -Path $_)
+            }
+    )
+
+    if ($missingPaths.Count -eq 0) {
+        return $managedPaths
+    }
+
+    if ($Force) {
+        return $availablePaths
+    }
+
+    if ($managedPaths.Count -gt 0 -or $availablePaths.Count -eq 1) {
+        return @(
+            $managedPaths
+            $missingPaths
+        )
     }
 
     Write-Host ''
@@ -445,6 +576,8 @@ function Resolve-MowProfilePaths {
         $choice = '3'
     }
 
+    $script:MowProfileSelectionConfirmed = $true
+
     switch ($choice.Trim()) {
         '1' {
             return @($PowerShell7ProfilePath)
@@ -454,8 +587,8 @@ function Resolve-MowProfilePaths {
         }
         '3' {
             return @(
-                $WindowsPowerShellProfilePath
                 $PowerShell7ProfilePath
+                $WindowsPowerShellProfilePath
             )
         }
         default {
@@ -616,6 +749,10 @@ function Invoke-MowInstallOrUpdate {
     $transactionStarted = $false
     $operation = 'Install'
     $installedVersion = ''
+    $profilePaths = @()
+    $newProfilePaths = @()
+    $artifactShouldReplace = $true
+    $updateDeclined = $false
 
     try {
         Write-Host 'Downloading MowPSKit...'
@@ -629,6 +766,7 @@ function Invoke-MowInstallOrUpdate {
             -Label 'artifact'
 
         $remoteVersion = Get-MowArtifactVersion -Path $tempPath
+        $comparison = $null
 
         if ($isInstalled) {
             $operation = 'Update'
@@ -637,29 +775,116 @@ function Invoke-MowInstallOrUpdate {
                 -Left $remoteVersion `
                 -Right $installedVersion
 
-            if ($comparison -eq 0) {
-                Write-Host "MowPSKit $installedVersion is already up to date."
-                return
-            }
+            if ($Action -eq 'Update') {
+                if ($comparison -eq 0) {
+                    Write-Host "MowPSKit $installedVersion is already up to date."
+                    return
+                }
 
-            if ($comparison -lt 0) {
-                Write-Host (
-                    "Installed MowPSKit $installedVersion is newer than remote " +
-                    "$remoteVersion. Downgrade skipped."
+                if ($comparison -lt 0) {
+                    Write-Host (
+                        "Installed MowPSKit $installedVersion is newer than remote " +
+                        "$remoteVersion. Downgrade skipped."
+                    )
+                    return
+                }
+
+                if (-not (Confirm-MowOperation `
+                    -Operation Update `
+                    -RemoteVersion $remoteVersion `
+                    -InstalledVersion $installedVersion)) {
+                    Write-Host 'MowPSKit update cancelled.'
+                    return
+                }
+
+                $profilePaths = @(
+                    Resolve-MowProfilePaths -Operation Update
                 )
-                return
+            }
+            else {
+                if ($comparison -gt 0) {
+                    if (Confirm-MowOperation `
+                        -Operation Update `
+                        -RemoteVersion $remoteVersion `
+                        -InstalledVersion $installedVersion) {
+                        $artifactShouldReplace = $true
+                    }
+                    else {
+                        $artifactShouldReplace = $false
+                        $updateDeclined = $true
+                    }
+                }
+                else {
+                    $artifactShouldReplace = $false
+                }
+
+                $profilePaths = @(
+                    Resolve-MowProfilePaths -Operation Install
+                )
+
+                $newProfilePaths = @(
+                    $profilePaths |
+                        Where-Object {
+                            -not (Test-MowProfileBlock -Path $_)
+                        }
+                )
+
+                if (
+                    $newProfilePaths.Count -gt 0 -and
+                    -not $script:MowProfileSelectionConfirmed
+                ) {
+                    if (-not (Confirm-MowProfileAddition -Paths $newProfilePaths)) {
+                        $profilePaths = @(
+                            $profilePaths |
+                                Where-Object {
+                                    Test-MowProfileBlock -Path $_
+                                }
+                        )
+                        $newProfilePaths = @()
+                    }
+                }
+
+                if (-not $artifactShouldReplace -and $newProfilePaths.Count -eq 0) {
+                    if ($updateDeclined) {
+                        Write-Host 'MowPSKit update cancelled.'
+                    }
+                    elseif ($comparison -eq 0) {
+                        Write-Host "MowPSKit $installedVersion is already up to date."
+                    }
+                    else {
+                        Write-Host (
+                            "Installed MowPSKit $installedVersion is newer than remote " +
+                            "$remoteVersion. Downgrade skipped."
+                        )
+                    }
+
+                    return
+                }
+
+                if ($comparison -lt 0 -and $newProfilePaths.Count -gt 0) {
+                    Write-Host (
+                        "Installed MowPSKit $installedVersion is newer than remote " +
+                        "$remoteVersion. Keeping the installed version."
+                    )
+                }
             }
         }
+        else {
+            if (-not (Confirm-MowOperation `
+                -Operation Install `
+                -RemoteVersion $remoteVersion)) {
+                Write-Host 'MowPSKit install cancelled.'
+                return
+            }
 
-        if (-not (Confirm-MowOperation `
-            -Operation $operation `
-            -RemoteVersion $remoteVersion `
-            -InstalledVersion $installedVersion)) {
-            Write-Host "MowPSKit $($operation.ToLowerInvariant()) cancelled."
-            return
+            $profilePaths = @(
+                Resolve-MowProfilePaths -Operation Install
+            )
+
+            $newProfilePaths = @($profilePaths)
         }
 
-        if ($operation -eq 'Install') {
+        if (-not $isInstalled -or $newProfilePaths.Count -gt 0) {
             Confirm-MowProfileExecutionPolicy
         }
 
@@ -669,13 +894,16 @@ function Invoke-MowInstallOrUpdate {
             -Force |
             Out-Null
 
-        $profilePaths = @(
-            Resolve-MowProfilePaths -Operation $operation
-        )
+        $effectiveVersion = if ($artifactShouldReplace) {
+            $remoteVersion
+        }
+        else {
+            $installedVersion
+        }
 
         $metadata = [ordered]@{
             Product = $ProductName
-            Version = $remoteVersion
+            Version = $effectiveVersion
             InstallPath = $InstallPath
             ProfilePaths = $profilePaths
             ArtifactUrl = $ArtifactUrl
@@ -706,10 +934,12 @@ function Invoke-MowInstallOrUpdate {
         )
         $transactionStarted = $true
 
-        Move-Item `
-            -LiteralPath $tempPath `
-            -Destination $InstallPath `
-            -Force
+        if ($artifactShouldReplace) {
+            Move-Item `
+                -LiteralPath $tempPath `
+                -Destination $InstallPath `
+                -Force
+        }
 
         foreach ($path in $profilePaths) {
             Add-MowProfileBlock -Path $path
@@ -720,56 +950,62 @@ function Invoke-MowInstallOrUpdate {
             -Destination $MetadataPath `
             -Force
 
-        & $InstallPath
+        if ($artifactShouldReplace) {
+            & $InstallPath
 
-        $runtimeModulesAfter = @(
-            Microsoft.PowerShell.Core\Get-Module `
-                -Name $ProductName `
-                -All
-        )
-        $reusedOldRuntime = $false
+            $runtimeModulesAfter = @(
+                Microsoft.PowerShell.Core\Get-Module `
+                    -Name $ProductName `
+                    -All
+            )
+            $reusedOldRuntime = $false
 
-        foreach ($oldRuntime in $runtimeModulesBefore) {
-            foreach ($newRuntime in $runtimeModulesAfter) {
-                if ([object]::ReferenceEquals($oldRuntime, $newRuntime)) {
-                    $reusedOldRuntime = $true
+            foreach ($oldRuntime in $runtimeModulesBefore) {
+                foreach ($newRuntime in $runtimeModulesAfter) {
+                    if ([object]::ReferenceEquals($oldRuntime, $newRuntime)) {
+                        $reusedOldRuntime = $true
+                    }
                 }
+            }
+
+            if (
+                $runtimeModulesAfter.Count -ne 1 -or
+                $reusedOldRuntime
+            ) {
+                throw 'Downloaded artifact did not load exactly one new MowPSKit runtime module.'
+            }
+
+            $runtimeVersion = & 'mow.ver'
+
+            if (
+                [string]$runtimeVersion.Version -ne $remoteVersion -or
+                [string]$runtimeVersion.Mode -ne 'Installed' -or
+                [string]$runtimeVersion.BuildMode -ne 'Compiled'
+            ) {
+                throw (
+                    'Downloaded artifact loaded with unexpected runtime metadata. ' +
+                    "Version=$($runtimeVersion.Version); " +
+                    "Mode=$($runtimeVersion.Mode); " +
+                    "BuildMode=$($runtimeVersion.BuildMode)."
+                )
             }
         }
 
-        if (
-            $runtimeModulesAfter.Count -ne 1 -or
-            $reusedOldRuntime
-        ) {
-            throw 'Downloaded artifact did not load exactly one new MowPSKit runtime module.'
-        }
-
-        $runtimeVersion = & 'mow.ver'
-
-        if (
-            [string]$runtimeVersion.Version -ne $remoteVersion -or
-            [string]$runtimeVersion.Mode -ne 'Installed' -or
-            [string]$runtimeVersion.BuildMode -ne 'Compiled'
-        ) {
-            throw (
-                'Downloaded artifact loaded with unexpected runtime metadata. ' +
-                "Version=$($runtimeVersion.Version); " +
-                "Mode=$($runtimeVersion.Mode); " +
-                "BuildMode=$($runtimeVersion.BuildMode)."
-            )
-        }
-
         $installSucceeded = $true
-        $completedOperation = if ($operation -eq 'Update') {
-            'updated'
-        }
-        else {
-            'installed'
-        }
 
         Write-Host ''
-        Write-Host "MowPSKit $completedOperation."
-        Write-Host "  Version : $remoteVersion"
+
+        if (-not $artifactShouldReplace) {
+            Write-Host 'MowPSKit profile configuration updated.'
+        }
+        elseif ($isInstalled) {
+            Write-Host 'MowPSKit updated.'
+        }
+        else {
+            Write-Host 'MowPSKit installed.'
+        }
+
+        Write-Host "  Version : $effectiveVersion"
         Write-Host "  Path    : $InstallPath"
         Write-Host '  Profiles:'
 
