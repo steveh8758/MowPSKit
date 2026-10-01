@@ -1,11 +1,11 @@
 [CmdletBinding(DefaultParameterSetName = 'Source')]
 param(
     [AllowEmptyString()]
-    [string]$Prefix = '',
+    [string]$Prefix = 'm',
 
     [Alias('Separator')]
     [AllowEmptyString()]
-    [string]$CommandSeparator = '',
+    [string]$CommandSeparator = '.',
 
     [Parameter(ParameterSetName = 'Source')]
     [string]$SourceRoot = $PSScriptRoot,
