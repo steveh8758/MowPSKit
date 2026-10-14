@@ -498,7 +498,7 @@ function Select-Checklist {
 
     Returns no output when the checklist is cancelled.
     #>
-    
+
     param(
 
         [Parameter(Mandatory)]
@@ -1385,4 +1385,3 @@ function Write-Table {
         }
     }
 }
-
